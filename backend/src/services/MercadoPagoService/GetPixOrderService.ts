@@ -5,8 +5,10 @@ interface PixOrderDetails {
   orderId: string;
   externalReference: string;
   orderStatus: string;
+  orderStatusDetail: string;
   paymentId: string | null;
   paymentStatus: string;
+  paymentStatusDetail: string;
   qrCode: string | null;
   amount: string;
 }
@@ -87,18 +89,34 @@ const GetPixOrderService = async (
           const payment =
             result.transactions?.payments?.[0];
 
-          resolve({
+          return resolve({
             orderId: String(result.id),
+
             externalReference:
               result.external_reference || "",
-            orderStatus: result.status || "",
-            paymentId: payment?.id
-              ? String(payment.id)
-              : null,
-            paymentStatus: payment?.status || "",
+
+            orderStatus:
+              result.status || "",
+
+            orderStatusDetail:
+              result.status_detail || "",
+
+            paymentId:
+              payment?.id != null
+                ? String(payment.id)
+                : null,
+
+            paymentStatus:
+              payment?.status || "",
+
+            paymentStatusDetail:
+              payment?.status_detail || "",
+
             qrCode:
               payment?.payment_method?.qr_code || null,
-            amount: String(result.total_amount || "")
+
+            amount:
+              String(result.total_amount ?? "")
           });
         });
       }
