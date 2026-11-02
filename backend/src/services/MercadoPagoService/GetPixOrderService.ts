@@ -24,7 +24,7 @@ const GetPixOrderService = async (
 
   if (
     !orderId ||
-    !/^ORD[A-Za-z0-9_-]+$/.test(orderId)
+    !/^[A-Za-z0-9_-]{10,100}$/.test(orderId)
   ) {
     throw new Error("Identificador da order inválido");
   }
