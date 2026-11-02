@@ -1,3 +1,4 @@
+
 import { Sequelize } from "sequelize-typescript";
 import User from "../models/User";
 import Setting from "../models/Setting";
@@ -38,9 +39,11 @@ import FilesOptions from "../models/FilesOptions";
 import Prompt from "../models/Prompt";
 import QueueIntegrations from "../models/QueueIntegrations";
 
+// NOVO MODELO - MERCADO PAGO
+import PaymentTransaction from "../models/PaymentTransaction";
+
 // eslint-disable-next-line
 const dbConfig = require("../config/database");
-// import dbConfig from "../config/database";
 
 const sequelize = new Sequelize(dbConfig);
 
@@ -83,6 +86,9 @@ const models = [
   FilesOptions,
   Prompt,
   QueueIntegrations,
+
+  // REGISTRO DO MODELO MERCADO PAGO
+  PaymentTransaction
 ];
 
 sequelize.addModels(models);
