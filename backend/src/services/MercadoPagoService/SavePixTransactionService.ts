@@ -27,7 +27,9 @@ const SavePixTransactionService = async ({
 
   if (
     !Number.isSafeInteger(invoiceId) ||
+    invoiceId <= 0 ||
     !Number.isSafeInteger(companyId) ||
+    companyId <= 0 ||
     !Number.isFinite(amount) ||
     amount <= 0 ||
     !idempotencyKey ||
@@ -37,42 +39,91 @@ const SavePixTransactionService = async ({
     throw new Error("Dados da transação inválidos");
   }
 
-  const existing = await PaymentTransaction.findOne({
+  // Localizar a reserva criada anteriormente
+  const transaction = await PaymentTransaction.findOne({
     where: {
+      invoiceId,
+      companyId,
+      provider: "mercadopago",
       idempotencyKey
     }
   });
 
-  if (existing) {
-    if (
-      existing.invoiceId !== invoiceId ||
-      existing.companyId !== companyId ||
-      Number(existing.amount) !== amount ||
-      existing.orderId !== orderId
-    ) {
-      throw new Error(
-        "Conflito entre registros de pagamento"
-      );
-    }
-
-    return existing;
+  if (!transaction) {
+    throw new Error(
+      "Reserva da cobrança Pix não encontrada"
+    );
   }
 
-  const transaction = await PaymentTransaction.create({
-    invoiceId,
-    companyId,
-    provider: "mercadopago",
-    amount,
-    idempotencyKey,
-    orderId,
-    paymentId: paymentId || null,
-    qrCode,
-    status,
-    expiresAt,
-    paidAt: null
-  } as any);
+  // Verificar o valor reservado
+  if (
+    Math.round(Number(transaction.amount) * 100) !==
+    Math.round(amount * 100)
+  ) {
+    throw new Error(
+      "Valor da reserva divergente"
+    );
+  }
 
-  return transaction;
+  // Não sobrescrever uma cobrança já confirmada
+  if (
+    transaction.status === "paid" ||
+    transaction.status === "processed"
+  ) {
+    throw new Error(
+      "Transação já processada"
+    );
+  }
+
+  // Não associar uma order diferente à mesma reserva
+  if (
+    transaction.orderId &&
+    transaction.orderId !== orderId
+  ) {
+    throw new Error(
+      "Conflito no identificador da cobrança"
+    );
+  }
+
+  // Atualização condicional da reserva
+  const [updatedCount] = await PaymentTransaction.update(
+    {
+      orderId,
+      paymentId: paymentId || null,
+      qrCode,
+      status: "action_required",
+      expiresAt
+    },
+    {
+      where: {
+        id: transaction.id,
+        invoiceId,
+        companyId,
+        provider: "mercadopago",
+        idempotencyKey,
+        status: "creating",
+        orderId: null
+      }
+    }
+  );
+
+  if (updatedCount !== 1) {
+    throw new Error(
+      "A reserva foi alterada durante o processamento"
+    );
+  }
+
+  const updated = await PaymentTransaction.findByPk(
+    transaction.id
+  );
+
+  if (!updated) {
+    throw new Error(
+      "Transação não encontrada após atualização"
+    );
+  }
+
+  return updated;
 };
 
 export default SavePixTransactionService;
