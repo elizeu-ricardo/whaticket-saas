@@ -105,6 +105,20 @@ module.exports = {
         name: "payment_transactions_invoice_company_idx"
       }
     );
+
+    // Impedir mais de uma tentativa ativa por fatura
+    await queryInterface.sequelize.query(`
+      CREATE UNIQUE INDEX
+        payment_transactions_active_invoice_unique
+      ON "PaymentTransactions" ("invoiceId", "companyId")
+      WHERE status IN (
+        'creating',
+        'pending',
+        'action_required',
+        'processing'
+      );
+    `);
+
   },
 
   down: async (queryInterface: QueryInterface) => {
