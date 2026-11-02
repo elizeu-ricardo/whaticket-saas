@@ -1,29 +1,16 @@
-import * as Yup from 'yup';
-import checkoutFormModel from './checkoutFormModel';
-const {
-  formField: {
-    firstName,
-    address1,
-    city,
-    zipcode,
-    country,
-  }
-} = checkoutFormModel;
 
+import * as Yup from "yup";
 
-export default [
-  Yup.object().shape({
-    [firstName.name]: Yup.string().required(`${firstName.requiredErrorMsg}`),
-    [address1.name]: Yup.string().required(`${address1.requiredErrorMsg}`),
-    [city.name]: Yup.string()
-      .nullable()
-      .required(`${city.requiredErrorMsg}`),
-    [zipcode.name]: Yup.string()
-      .required(`${zipcode.requiredErrorMsg}`),
+// O checkout Pix utiliza uma fatura existente.
+// O backend valida a empresa, a fatura e o valor.
+//
+// Mantemos um schema para cada etapa do Stepper,
+// evitando validações antigas de endereço e cartão.
 
-    [country.name]: Yup.string()
-      .nullable()
-      .required(`${country.requiredErrorMsg}`)
-  }),
-
+const validationSchema = [
+  Yup.object().shape({}), // Etapa 0 - Dados
+  Yup.object().shape({}), // Etapa 1 - Pix
+  Yup.object().shape({})  // Etapa 2 - Revisão
 ];
+
+export default validationSchema;
