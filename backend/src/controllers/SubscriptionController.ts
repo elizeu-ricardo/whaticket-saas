@@ -9,7 +9,7 @@ import options from "../config/Gn";
 import CreatePixOrderService from "../services/MercadoPagoService/CreatePixOrderService";
 import SavePixTransactionService from "../services/MercadoPagoService/SavePixTransactionService";
 import ReservePixTransactionService from "../services/MercadoPagoService/ReservePixTransactionService";
-
+import GetPixOrderService from "../services/MercadoPagoService/GetPixOrderService";
 import Company from "../models/Company";
 import Invoices from "../models/Invoices";
 
@@ -140,9 +140,99 @@ export const createSubscription = async (
 
   // Já existe uma tentativa ativa.
   // Não solicitar outra cobrança ao provedor.
+  
   if (!reservation.created) {
+    // Uma reserva sem orderId pode representar uma
+    // cobrança criada no Mercado Pago, mas cuja
+    // resposta não foi salva no PostgreSQL.
+    if (!transaction.orderId) {
+      throw new AppError(
+        "Existe uma tentativa de Pix em verificação. " +
+        "Não é seguro criar outra cobrança agora.",
+        409
+      );
+    }
+  
+    const order = await GetPixOrderService(
+      transaction.orderId
+    );
+  
+    const expectedReference =
+      `invoice_${invoice.id}_company_${companyId}`;
+  
+    // Conferir se a order pertence à fatura
+    if (order.externalReference !== expectedReference) {
+      throw new AppError(
+        "Referência do pagamento divergente",
+        409
+      );
+    }
+  
+    // Conferir o valor da cobrança
+    const expectedCents = Math.round(invoiceValue * 100);
+    const actualCents = Math.round(Number(order.amount) * 100);
+  
+    if (
+      !Number.isFinite(actualCents) ||
+      expectedCents !== actualCents
+    ) {
+      throw new AppError(
+        "Valor do pagamento divergente",
+        409
+      );
+    }
+  
+    // Não permitir nova cobrança se já foi processada
+    if (
+      order.orderStatus === "processed" ||
+      order.paymentStatus === "processed"
+    ) {
+      throw new AppError(
+        "Pagamento processado. Aguardando atualização da fatura.",
+        409
+      );
+    }
+  
+    const createdAt = new Date(transaction.createdAt);
+    const ageMs = Date.now() - createdAt.getTime();
+  
+    // Limite conservador de recuperação: 45 minutos.
+    // O Pix foi solicitado com validade de 1 hora.
+    const safeRecoveryWindowMs = 45 * 60 * 1000;
+  
+    const withinRecoveryWindow =
+      Number.isFinite(ageMs) &&
+      ageMs >= 0 &&
+      ageMs < safeRecoveryWindowMs;
+  
+    const stillPending =
+      order.orderStatus === "action_required" &&
+      order.paymentStatus === "action_required";
+  
+    if (
+      withinRecoveryWindow &&
+      stillPending &&
+      order.qrCode
+    ) {
+      // Recuperar o QR Code sem criar outra cobrança
+      return res.status(200).json({
+        provider: "mercadopago",
+        orderId: order.orderId,
+        paymentId: order.paymentId,
+        status: order.paymentStatus,
+        qrcode: {
+          qrcode: order.qrCode
+        },
+        valor: {
+          original: invoiceValue.toFixed(2)
+        }
+      });
+    }
+  
+    // Não gerar outra cobrança automaticamente
     throw new AppError(
-      "Já existe uma tentativa de pagamento para esta fatura. Aguarde a verificação da cobrança.",
+      "A cobrança anterior precisa ser conciliada " +
+      "antes de uma nova tentativa de pagamento.",
       409
     );
   }
