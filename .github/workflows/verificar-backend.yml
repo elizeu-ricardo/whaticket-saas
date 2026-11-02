@@ -5,9 +5,13 @@ on:
   push:
     branches:
       - auditoria-seguranca
+      - desenvolvimento
+
   pull_request:
     branches:
       - main
+
+  workflow_dispatch:
 
 permissions:
   contents: read
