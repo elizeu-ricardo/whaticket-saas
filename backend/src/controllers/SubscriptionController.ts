@@ -104,9 +104,18 @@ export const createSubscription = async (
       qrcode,
 
     });
-  } catch (error) {
-    throw new AppError("Validation fails", 400);
-  }
+  } catch (error: any) {
+  console.error("ERRO EFÍ - PIX:", {
+    message: error?.message,
+    status: error?.response?.status,
+    data: error?.response?.data
+  });
+
+  throw new AppError(
+    "Erro ao gerar cobrança Pix. Consulte os logs do backend.",
+    400
+  );
+}
 };
 
 export const createWebhook = async (
