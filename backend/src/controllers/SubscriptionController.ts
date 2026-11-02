@@ -1,154 +1,146 @@
+
 import { Request, Response } from "express";
-import express from "express";
 import * as Yup from "yup";
 import Gerencianet from "gn-api-sdk-typescript";
 import AppError from "../errors/AppError";
 
 import options from "../config/Gn";
+import CreatePixOrderService from "../services/MercadoPagoService/CreatePixOrderService";
+
 import Company from "../models/Company";
 import Invoices from "../models/Invoices";
-import Subscriptions from "../models/Subscriptions";
 import { getIO } from "../libs/socket";
-import UpdateUserService from "../services/UserServices/UpdateUserService";
 
-const app = express();
+// ==========================================
+// CONSULTA LEGADA - EFÍ
+// ==========================================
 
-
-export const index = async (req: Request, res: Response): Promise<Response> => {
+export const index = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
   const gerencianet = Gerencianet(options);
   return res.json(gerencianet.getSubscriptions());
 };
 
+// ==========================================
+// CRIAR COBRANÇA PIX - MERCADO PAGO
+// ==========================================
+
 export const createSubscription = async (
   req: Request,
   res: Response
-  ): Promise<Response> => {
-    const gerencianet = Gerencianet(options);
-    const { companyId } = req.user;
+): Promise<Response> => {
+  const companyId = Number(req.user.companyId);
+
+  if (
+    !Number.isSafeInteger(companyId) ||
+    companyId <= 0
+  ) {
+    throw new AppError("Empresa inválida", 400);
+  }
 
   const schema = Yup.object().shape({
-    price: Yup.string().required(),
-    users: Yup.string().required(),
-    connections: Yup.string().required()
+    invoiceId: Yup.number()
+      .integer()
+      .positive()
+      .required()
   });
 
   if (!(await schema.isValid(req.body))) {
-    throw new AppError("Validation fails", 400);
+    throw new AppError("Fatura inválida", 400);
   }
 
-  const {
-    firstName,
-    price,
-    users,
-    connections,
-    address2,
-    city,
-    state,
-    zipcode,
-    country,
-    plan,
-    invoiceId
-  } = req.body;
-  
-    const invoiceIdNumber = Number(invoiceId);
+  const invoiceId = Number(req.body.invoiceId);
 
   if (
-    !Number.isSafeInteger(invoiceIdNumber) ||
-    invoiceIdNumber <= 0
+    !Number.isSafeInteger(invoiceId) ||
+    invoiceId <= 0
   ) {
     throw new AppError("Fatura inválida", 400);
   }
 
+  // Buscar apenas faturas da empresa autenticada
   const invoice = await Invoices.findOne({
     where: {
-      id: invoiceIdNumber,
+      id: invoiceId,
       companyId
     }
   });
 
   if (!invoice) {
-    throw new AppError("Fatura não encontrada", 404);
+    throw new AppError(
+      "Fatura não encontrada",
+      404
+    );
   }
 
+  // Impedir pagamento de fatura já quitada
   if (invoice.status === "paid") {
-    throw new AppError("Esta fatura já foi paga", 400);
+    throw new AppError(
+      "Esta fatura já foi paga",
+      400
+    );
   }
 
+  // Valor obtido diretamente do banco
   const invoiceValue = Number(invoice.value);
 
   if (
     !Number.isFinite(invoiceValue) ||
     invoiceValue <= 0
   ) {
-    throw new AppError("Valor da fatura inválido", 400);
+    throw new AppError(
+      "Valor da fatura inválido",
+      400
+    );
   }
-  
-  const body = {
-    calendario: {
-      expiracao: 3600
-    },
-    valor: {
-      original:  invoiceValue.toFixed(2)
-    },
-    chave: process.env.GERENCIANET_PIX_KEY,
-    solicitacaoPagador: `#Fatura:${invoiceId}`
-    };
+
+  // Buscar dados da empresa
+  const company = await Company.findByPk(companyId);
+
+  if (!company) {
+    throw new AppError(
+      "Empresa não encontrada",
+      404
+    );
+  }
+
+  if (!company.email) {
+    throw new AppError(
+      "Empresa sem e-mail de cobrança cadastrado",
+      400
+    );
+  }
+
+  // Gerar cobrança pelo Mercado Pago
   try {
-    const pix = await gerencianet.pixCreateImmediateCharge(null, body);
-
-    const qrcode = await gerencianet.pixGenerateQRCode({
-      id: pix.loc.id
-    });
-
-    const updateCompany = await Company.findOne();
-
-    if (!updateCompany) {
-      throw new AppError("Company not found", 404);
-    }
-
-
-/*     await Subscriptions.create({
+    const pix = await CreatePixOrderService({
+      invoiceId: invoice.id,
       companyId,
-      isActive: false,
-      userPriceCents: users,
-      whatsPriceCents: connections,
-      lastInvoiceUrl: pix.location,
-      lastPlanChange: new Date(),
-      providerSubscriptionId: pix.loc.id,
-      expiresAt: new Date()
-    }); */
-
-/*     const { id } = req.user;
-    const userData = {};
-    const userId = id;
-    const requestUserId = parseInt(id);
-    const user = await UpdateUserService({ userData, userId, companyId, requestUserId }); */
-
-    /*     const io = getIO();
-        io.emit("user", {
-          action: "update",
-          user
-        }); */
-
-
-    return res.json({
-      ...pix,
-      qrcode,
-
+      amount: invoiceValue,
+      payerEmail: company.email,
+      idempotencyKey: `invoice_${invoice.id}_company_${companyId}`
     });
-  } catch (error: any) {
-  console.error("ERRO EFÍ - PIX:", {
-    message: error?.message,
-    status: error?.response?.status,
-    data: error?.response?.data
-  });
 
-  throw new AppError(
-    "Erro ao gerar cobrança Pix. Consulte os logs do backend.",
-    400
-  );
-}
+    return res.status(200).json(pix);
+
+  } catch (error: any) {
+    console.error("ERRO MERCADO PAGO:", {
+      message: error?.message
+    });
+
+    throw new AppError(
+      "Não foi possível gerar a cobrança Pix",
+      502
+    );
+  }
 };
+
+// ==========================================
+// WEBHOOK LEGADO - EFÍ
+// TEMPORÁRIO: NÃO UTILIZAR PARA MERCADO PAGO
+// ==========================================
 
 export const createWebhook = async (
   req: Request,
@@ -175,66 +167,35 @@ export const createWebhook = async (
 
   try {
     const gerencianet = Gerencianet(options);
-    const create = await gerencianet.pixConfigWebhook(params, body);
+    const create = await gerencianet.pixConfigWebhook(
+      params,
+      body
+    );
     return res.json(create);
+
   } catch (error) {
-    console.log(error);
+    console.error("ERRO WEBHOOK EFÍ:", error);
+
+    throw new AppError(
+      "Erro ao configurar webhook",
+      502
+    );
   }
 };
+
+// ==========================================
+// RECEBIMENTO WEBHOOK LEGADO - EFÍ
+// SERÁ SUBSTITUÍDO PELO MERCADO PAGO
+// ==========================================
 
 export const webhook = async (
   req: Request,
   res: Response
-  ): Promise<Response> => {
-  const { type } = req.params;
-  const { evento } = req.body;
-  if (evento === "teste_webhook") {
-    return res.json({ ok: true });
-  }
-  if (req.body.pix) {
-    const gerencianet = Gerencianet(options);
-    req.body.pix.forEach(async (pix: any) => {
-      const detahe = await gerencianet.pixDetailCharge({
-        txid: pix.txid
-      });
-
-      if (detahe.status === "CONCLUIDA") {
-        const { solicitacaoPagador } = detahe;
-        const invoiceID = solicitacaoPagador.replace("#Fatura:", "");
-        const invoices = await Invoices.findByPk(invoiceID);
-        const companyId =invoices.companyId;
-        const company = await Company.findByPk(companyId);
-
-        const expiresAt = new Date(company.dueDate);
-        expiresAt.setDate(expiresAt.getDate() + 30);
-        const date = expiresAt.toISOString().split("T")[0];
-
-        if (company) {
-          await company.update({
-            dueDate: date
-          });
-         const invoi = await invoices.update({
-            id: invoiceID,
-            status: 'paid'
-          });
-          await company.reload();
-          const io = getIO();
-          const companyUpdate = await Company.findOne({
-            where: {
-              id: companyId
-            }
-          });
-
-          io.to(`company-${companyId}-mainchannel`).emit(`company-${companyId}-payment`, {
-            action: detahe.status,
-            company: companyUpdate
-          });
-        }
-
-      }
-    });
-
-  }
-
-  return res.json({ ok: true });
+): Promise<Response> => {
+  // Desativado durante a migração.
+  // Não confiar em notificações recebidas sem
+  // autenticação e confirmação no provedor.
+  return res.status(503).json({
+    error: "Webhook de pagamentos em migração"
+  });
 };
