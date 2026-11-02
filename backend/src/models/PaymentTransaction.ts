@@ -41,6 +41,9 @@ class PaymentTransaction extends Model<PaymentTransaction> {
   @Column(DataType.TEXT)
   qrCode: string;
 
+  @Column(DataType.DATE)
+  expiresAt: Date;
+
   @AllowNull(false)
   @Column({
     type: DataType.STRING,
