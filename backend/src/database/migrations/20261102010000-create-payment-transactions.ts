@@ -42,6 +42,11 @@ module.exports = {
         allowNull: true
       },
 
+      expiresAt: {
+        type: DataTypes.DATE,
+        allowNull: true
+      },
+
       idempotencyKey: {
         type: DataTypes.STRING,
         allowNull: false,
