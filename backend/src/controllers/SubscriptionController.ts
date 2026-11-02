@@ -50,13 +50,45 @@ export const createSubscription = async (
     invoiceId
   } = req.body;
   
+    const invoiceIdNumber = Number(invoiceId);
 
+  if (
+    !Number.isSafeInteger(invoiceIdNumber) ||
+    invoiceIdNumber <= 0
+  ) {
+    throw new AppError("Fatura inválida", 400);
+  }
+
+  const invoice = await Invoices.findOne({
+    where: {
+      id: invoiceIdNumber,
+      companyId
+    }
+  });
+
+  if (!invoice) {
+    throw new AppError("Fatura não encontrada", 404);
+  }
+
+  if (invoice.status === "paid") {
+    throw new AppError("Esta fatura já foi paga", 400);
+  }
+
+  const invoiceValue = Number(invoice.value);
+
+  if (
+    !Number.isFinite(invoiceValue) ||
+    invoiceValue <= 0
+  ) {
+    throw new AppError("Valor da fatura inválido", 400);
+  }
+  
   const body = {
     calendario: {
       expiracao: 3600
     },
     valor: {
-      original: price.toLocaleString("pt-br", { minimumFractionDigits: 2 }).replace(",", ".")
+      original:  invoiceValue.toFixed(2)
     },
     chave: process.env.GERENCIANET_PIX_KEY,
     solicitacaoPagador: `#Fatura:${invoiceId}`
