@@ -37,6 +37,11 @@ module.exports = {
         allowNull: true
       },
 
+      qrCode: {
+        type: DataTypes.TEXT,
+        allowNull: true
+      },
+
       idempotencyKey: {
         type: DataTypes.STRING,
         allowNull: false,
