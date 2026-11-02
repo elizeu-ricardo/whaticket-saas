@@ -116,15 +116,34 @@ export const createSubscription = async (
 
   // Gerar cobrança pelo Mercado Pago
   try {
-    const pix = await CreatePixOrderService({
-      invoiceId: invoice.id,
-      companyId,
-      amount: invoiceValue,
-      payerEmail: company.email,
-      idempotencyKey: `invoice_${invoice.id}_company_${companyId}`
-    });
-
-    return res.status(200).json(pix);
+    
+  const idempotencyKey =
+    `invoice_${invoice.id}_company_${companyId}`;
+  
+  const pix = await CreatePixOrderService({
+    invoiceId: invoice.id,
+    companyId,
+    amount: invoiceValue,
+    payerEmail: company.email,
+    idempotencyKey
+  });
+  
+  // Registrar a cobrança no PostgreSQL
+  await SavePixTransactionService({
+    invoiceId: invoice.id,
+    companyId,
+    amount: invoiceValue,
+    idempotencyKey,
+    orderId: String(pix.orderId),
+    paymentId: pix.paymentId
+      ? String(pix.paymentId)
+      : undefined,
+    qrCode: pix.qrcode.qrcode,
+    status: pix.status || "pending",
+    expiresAt: null
+  });
+  
+  return res.status(200).json(pix);
 
   } catch (error: any) {
     console.error("ERRO MERCADO PAGO:", {
