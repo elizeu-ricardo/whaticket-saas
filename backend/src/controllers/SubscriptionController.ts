@@ -6,6 +6,7 @@ import AppError from "../errors/AppError";
 
 import options from "../config/Gn";
 import CreatePixOrderService from "../services/MercadoPagoService/CreatePixOrderService";
+import SavePixTransactionService from "../services/MercadoPagoService/SavePixTransactionService";
 
 import Company from "../models/Company";
 import Invoices from "../models/Invoices";
