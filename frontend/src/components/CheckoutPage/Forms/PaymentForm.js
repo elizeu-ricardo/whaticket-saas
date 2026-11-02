@@ -1,237 +1,134 @@
-import React, { useState, useEffect, useReducer } from 'react';
-import Button from '@material-ui/core/Button';
-import Card from '@material-ui/core/Card';
-import CardActions from '@material-ui/core/CardActions';
-import CardContent from '@material-ui/core/CardContent';
-import CardHeader from '@material-ui/core/CardHeader';
-import Grid from '@material-ui/core/Grid';
-import StarIcon from '@material-ui/icons/StarBorder';
-import Typography from '@material-ui/core/Typography';
-import { makeStyles } from '@material-ui/core/styles';
 
-import IconButton from '@material-ui/core/IconButton';
-import MinimizeIcon from '@material-ui/icons/Minimize';
-import AddIcon from '@material-ui/icons/Add';
+import React from "react";
 
-import usePlans from "../../../hooks/usePlans";
-import useCompanies from "../../../hooks/useCompanies";
+import {
+  Button,
+  Card,
+  CardHeader,
+  CardContent,
+  CardActions,
+  Typography,
+  Grid
+} from "@material-ui/core";
+
+import { makeStyles } from "@material-ui/core/styles";
 
 const useStyles = makeStyles((theme) => ({
-  '@global': {
-    ul: {
-      margin: 0,
-      padding: 0,
-      listStyle: 'none',
-    },
-  },
-  margin: {
-    margin: theme.spacing(1),
-  },
-
-
   cardHeader: {
     backgroundColor:
-      theme.palette.type === 'light' ? theme.palette.grey[200] : theme.palette.grey[700],
-  },
-  cardPricing: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'baseline',
-    marginBottom: theme.spacing(2),
-  },
-  footer: {
-    borderTop: `1px solid ${theme.palette.divider}`,
-    marginTop: theme.spacing(8),
-    paddingTop: theme.spacing(3),
-    paddingBottom: theme.spacing(3),
-    [theme.breakpoints.up('sm')]: {
-      paddingTop: theme.spacing(6),
-      paddingBottom: theme.spacing(6),
-    },
+      theme.palette.type === "light"
+        ? theme.palette.grey[200]
+        : theme.palette.grey[700]
   },
 
-  customCard: {
-    display: "flex",
-    marginTop: "16px",
-    alignItems: "center",
-    flexDirection: "column",
+  card: {
+    marginTop: theme.spacing(2)
   },
-  custom: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
+
+  content: {
+    textAlign: "center",
+    padding: theme.spacing(3)
+  },
+
+  button: {
+    marginTop: theme.spacing(2)
   }
 }));
 
-
-export default function Pricing(props) {
+export default function PaymentForm(props) {
   const {
-    setFieldValue,
     setActiveStep,
     activeStep,
+    invoiceId
   } = props;
 
-  const handleChangeAdd = (event, newValue) => {
-    if (newValue < 3) return
-
-    const newPrice = 11.00;
-
-    setUsersPlans(newValue);
-    setCustomValuePlans(customValuePlans + newPrice);
-  }
-
-  const handleChangeMin = (event, newValue) => {
-    if (newValue < 3) return
-
-    const newPrice = 11;
-
-    setUsersPlans(newValue);
-    setCustomValuePlans(customValuePlans - newPrice);
-  }
-
-  const handleChangeConnectionsAdd = (event, newValue) => {
-    if (newValue < 3) return
-    const newPrice = 20.00;
-    setConnectionsPlans(newValue);
-    setCustomValuePlans(customValuePlans + newPrice);
-  }
-
-  const handleChangeConnectionsMin = (event, newValue) => {
-    if (newValue < 3) return
-    const newPrice = 20;
-    setConnectionsPlans(newValue);
-    setCustomValuePlans(customValuePlans - newPrice);
-  }
-
-  const { list, finder } = usePlans();
-  const { find } = useCompanies();
-
   const classes = useStyles();
-  const [usersPlans, setUsersPlans] = React.useState(3);
-  const [companiesPlans, setCompaniesPlans] = useState(0);
-  const [connectionsPlans, setConnectionsPlans] = React.useState(3);
-  const [storagePlans, setStoragePlans] = React.useState([]);
-  const [customValuePlans, setCustomValuePlans] = React.useState(49.00);
-  const [loading, setLoading] = React.useState(false);
-  const companyId = localStorage.getItem("companyId");
 
-  useEffect(() => {
-    async function fetchData() {
-      await loadCompanies();
+  const validInvoice =
+    Number.isSafeInteger(Number(invoiceId)) &&
+    Number(invoiceId) > 0;
+
+  const handleContinue = () => {
+    if (!validInvoice) {
+      return;
     }
-    fetchData();
-  }, [])
 
-  const loadCompanies = async () => {
-    setLoading(true);
-    try {
-      const companiesList = await find(companyId);
-      setCompaniesPlans(companiesList.planId);
-      await loadPlans(companiesList.planId);
-    } catch (e) {
-      console.log(e);
-      // toast.error("Não foi possível carregar a lista de registros");
-    }
-    setLoading(false);
-  };
-  const loadPlans = async (companiesPlans) => {
-    setLoading(true);
-    try {
-      const plansCompanies = await finder(companiesPlans);
-      const plans = []
-
-      //plansCompanies.forEach((plan) => {
-      plans.push({
-        title: plansCompanies.name,
-        planId: plansCompanies.id,
-        price: plansCompanies.value,
-        description: [
-          `${plansCompanies.users} Usuários`,
-          `${plansCompanies.connections} Conexão`,
-          `${plansCompanies.queues} Filas`
-        ],
-        users: plansCompanies.users,
-        connections: plansCompanies.connections,
-        queues: plansCompanies.queues,
-        buttonText: 'SELECIONAR',
-        buttonVariant: 'outlined',
-      })
-
-      // setStoragePlans(data);
-      //});
-      setStoragePlans(plans);
-    } catch (e) {
-      console.log(e);
-      // toast.error("Não foi possível carregar a lista de registros");
-    }
-    setLoading(false);
+    setActiveStep(activeStep + 1);
   };
 
-
-  const tiers = storagePlans
   return (
-    <React.Fragment>
-      <Grid container spacing={3}>
-        {tiers.map((tier) => (
-          // Enterprise card is full width at sm breakpoint
-          <Grid item key={tier.title} xs={12} sm={tier.title === 'Enterprise' ? 12 : 12} md={12}>
-            <Card>
-              <CardHeader
-                title={tier.title}
-                subheader={tier.subheader}
-                titleTypographyProps={{ align: 'center' }}
-                subheaderTypographyProps={{ align: 'center' }}
-                action={tier.title === 'Pro' ? <StarIcon /> : null}
-                className={classes.cardHeader}
-              />
-              <CardContent>
-                <div className={classes.cardPricing}>
-                  <Typography component="h2" variant="h3" color="textPrimary">
-                    {
+    <Grid container spacing={3}>
+      <Grid item xs={12}>
+        <Card className={classes.card}>
+          <CardHeader
+            title="Pagamento via Pix"
+            subheader="Mercado Pago"
+            titleTypographyProps={{
+              align: "center"
+            }}
+            subheaderTypographyProps={{
+              align: "center"
+            }}
+            className={classes.cardHeader}
+          />
 
-                      <React.Fragment>
-                        R${tier.price.toLocaleString('pt-br', { minimumFractionDigits: 2 })}
-                      </React.Fragment>
-                    }
-                  </Typography>
-                  <Typography variant="h6" color="textSecondary">
-                    /mês
-                  </Typography>
-                </div>
-                <ul>
-                  {tier.description.map((line) => (
-                    <Typography component="li" variant="subtitle1" align="center" key={line}>
-                      {line}
-                    </Typography>
-                  ))}
-                </ul>
-              </CardContent>
-              <CardActions>
-                <Button
-                  fullWidth
-                  variant={tier.buttonVariant}
-                  color="primary"
-                  onClick={() => {
-                    if (tier.custom) {
-                      setFieldValue("plan", JSON.stringify({
-                        users: usersPlans,
-                        connections: connectionsPlans,
-                        price: customValuePlans,
-                      }));
-                    } else {
-                      setFieldValue("plan", JSON.stringify(tier));
-                    }
-                    setActiveStep(activeStep + 1);
-                  }
-                  }
-                >
-                  {tier.buttonText}
-                </Button>
-              </CardActions>
-            </Card>
-          </Grid>
-        ))}
+          <CardContent className={classes.content}>
+            <Typography
+              variant="h5"
+              color="primary"
+              gutterBottom
+            >
+              Pagamento seguro
+            </Typography>
+
+            <Typography
+              variant="body1"
+              gutterBottom
+            >
+              Sua cobrança será gerada
+              pelo Mercado Pago.
+            </Typography>
+
+            <Typography
+              variant="body2"
+              color="textSecondary"
+            >
+              Fatura Nº {invoiceId}
+            </Typography>
+
+            <Typography
+              variant="body2"
+              color="textSecondary"
+              style={{ marginTop: 16 }}
+            >
+              Na próxima etapa, confirme a
+              solicitação para gerar seu QR Code Pix.
+            </Typography>
+
+            <Typography
+              variant="body2"
+              color="textSecondary"
+              style={{ marginTop: 16 }}
+            >
+              A renovação da licença será realizada
+              após a confirmação do pagamento.
+            </Typography>
+          </CardContent>
+
+          <CardActions>
+            <Button
+              fullWidth
+              variant="contained"
+              color="primary"
+              disabled={!validInvoice}
+              onClick={handleContinue}
+              className={classes.button}
+            >
+              CONTINUAR PARA O PIX
+            </Button>
+          </CardActions>
+        </Card>
       </Grid>
-    </React.Fragment>
+    </Grid>
   );
 }
