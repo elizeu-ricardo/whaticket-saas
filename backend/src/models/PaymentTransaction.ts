@@ -38,6 +38,9 @@ class PaymentTransaction extends Model<PaymentTransaction> {
   @Column(DataType.STRING)
   paymentId: string;
 
+  @Column(DataType.TEXT)
+  qrCode: string;
+
   @AllowNull(false)
   @Column({
     type: DataType.STRING,
