@@ -5,15 +5,16 @@ import Gerencianet from "gn-api-sdk-typescript";
 import AppError from "../errors/AppError";
 
 import options from "../config/Gn";
+
 import CreatePixOrderService from "../services/MercadoPagoService/CreatePixOrderService";
 import SavePixTransactionService from "../services/MercadoPagoService/SavePixTransactionService";
-import FindExistingPixTransactionService from "../services/MercadoPagoService/FindExistingPixTransactionService";
+import ReservePixTransactionService from "../services/MercadoPagoService/ReservePixTransactionService";
 
 import Company from "../models/Company";
 import Invoices from "../models/Invoices";
 
 // ==========================================
-// CONSULTA LEGADA - EFÍ
+// CONSULTA LEGADA - EFI
 // ==========================================
 
 export const index = async (
@@ -25,7 +26,7 @@ export const index = async (
 };
 
 // ==========================================
-// CRIAR COBRANÇA PIX - MERCADO PAGO
+// CRIAR COBRANCA PIX - MERCADO PAGO
 // ==========================================
 
 export const createSubscription = async (
@@ -61,7 +62,7 @@ export const createSubscription = async (
     throw new AppError("Fatura inválida", 400);
   }
 
-  // Buscar apenas faturas da empresa autenticada
+  // Buscar fatura da empresa autenticada
   const invoice = await Invoices.findOne({
     where: {
       id: invoiceId,
@@ -76,7 +77,6 @@ export const createSubscription = async (
     );
   }
 
-  // Impedir pagamento de fatura já quitada
   if (invoice.status === "paid") {
     throw new AppError(
       "Esta fatura já foi paga",
@@ -84,7 +84,6 @@ export const createSubscription = async (
     );
   }
 
-  // Valor obtido diretamente do banco
   const invoiceValue = Number(invoice.value);
 
   if (
@@ -115,78 +114,58 @@ export const createSubscription = async (
   }
 
   // ========================================
-  // VERIFICAR COBRANÇA EXISTENTE
+  // RESERVAR COBRANCA NO POSTGRESQL
+  // ========================================
+
+  let reservation;
+
+  try {
+    reservation = await ReservePixTransactionService({
+      invoiceId: invoice.id,
+      companyId,
+      amount: invoiceValue
+    });
+  } catch (error: any) {
+    console.error("ERRO RESERVA PIX:", {
+      message: error?.message
+    });
+
+    throw new AppError(
+      "Não foi possível reservar a cobrança Pix",
+      503
+    );
+  }
+
+  const transaction = reservation.transaction;
+
+  // Já existe uma tentativa ativa.
+  // Não solicitar outra cobrança ao provedor.
+  if (!reservation.created) {
+    throw new AppError(
+      "Já existe uma tentativa de pagamento para esta fatura. Aguarde a verificação da cobrança.",
+      409
+    );
+  }
+
+  // ========================================
+  // GERAR PIX UTILIZANDO A RESERVA
   // ========================================
 
   try {
-    const existing =
-      await FindExistingPixTransactionService({
-        invoiceId: invoice.id,
-        companyId,
-        amount: invoiceValue
-      });
-
-    if (existing.found) {
-      const order = existing.order;
-
-      if (!order) {
-        throw new AppError(
-          "Não foi possível verificar a cobrança anterior",
-          409
-        );
-      }
-
-      // Cobrança já processada pelo Mercado Pago
-      if (order.orderStatus === "processed") {
-        throw new AppError(
-          "Pagamento já processado. Aguardando atualização da fatura.",
-          409
-        );
-      }
-
-      // Cobrança anterior aguardando pagamento
-      if (
-        order.orderStatus === "action_required" &&
-        order.paymentStatus === "action_required" &&
-        order.qrCode
-      ) {
-        // Ainda não temos a validade confirmada
-        // da cobrança. Não reutilizar QR Code
-        // sem verificar sua expiração.
-        throw new AppError(
-          "Existe uma cobrança Pix pendente. A validade precisa ser verificada.",
-          409
-        );
-      }
-
-      // Outros estados exigem reconciliação
-      throw new AppError(
-        "Cobrança anterior requer verificação antes de gerar outro Pix.",
-        409
-      );
-    }
-
-    // ========================================
-    // GERAR NOVA COBRANÇA MERCADO PAGO
-    // ========================================
-
-    const idempotencyKey =
-      `invoice_${invoice.id}_company_${companyId}`;
-
     const pix = await CreatePixOrderService({
       invoiceId: invoice.id,
       companyId,
       amount: invoiceValue,
       payerEmail: company.email,
-      idempotencyKey
+      idempotencyKey: transaction.idempotencyKey
     });
 
-    // Registrar a cobrança no PostgreSQL
+    // Atualizar a reserva existente
     await SavePixTransactionService({
       invoiceId: invoice.id,
       companyId,
       amount: invoiceValue,
-      idempotencyKey,
+      idempotencyKey: transaction.idempotencyKey,
       orderId: String(pix.orderId),
       paymentId: pix.paymentId
         ? String(pix.paymentId)
@@ -196,28 +175,27 @@ export const createSubscription = async (
       expiresAt: pix.expiresAt
     });
 
+    // Retornar Pix para o checkout
     return res.status(200).json(pix);
 
   } catch (error: any) {
-    // Preserva erros de validação e conflito
-    if (error instanceof AppError) {
-      throw error;
-    }
-
     console.error("ERRO MERCADO PAGO:", {
+      transactionId: transaction.id,
       message: error?.message
     });
 
+    // Não remover a reserva automaticamente.
+    // A order pode ter sido criada no Mercado Pago
+    // mesmo que tenha ocorrido falha na resposta.
     throw new AppError(
-      "Não foi possível processar a cobrança Pix",
-      502
+      "Não foi possível concluir a geração do Pix. A cobrança precisa ser verificada antes de outra tentativa.",
+      503
     );
   }
 };
 
 // ==========================================
-// WEBHOOK LEGADO - EFÍ
-// TEMPORÁRIO: NÃO UTILIZAR PARA MERCADO PAGO
+// WEBHOOK LEGADO - EFI
 // ==========================================
 
 export const createWebhook = async (
@@ -245,6 +223,7 @@ export const createWebhook = async (
 
   try {
     const gerencianet = Gerencianet(options);
+
     const create = await gerencianet.pixConfigWebhook(
       params,
       body
@@ -252,8 +231,10 @@ export const createWebhook = async (
 
     return res.json(create);
 
-  } catch (error) {
-    console.error("ERRO WEBHOOK EFÍ:", error);
+  } catch (error: any) {
+    console.error("ERRO WEBHOOK EFI:", {
+      message: error?.message
+    });
 
     throw new AppError(
       "Erro ao configurar webhook",
@@ -263,7 +244,7 @@ export const createWebhook = async (
 };
 
 // ==========================================
-// WEBHOOK LEGADO - DESATIVADO
+// WEBHOOK ANTIGO - DESATIVADO
 // ==========================================
 
 export const webhook = async (
