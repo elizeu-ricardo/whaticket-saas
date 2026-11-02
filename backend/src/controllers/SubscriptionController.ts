@@ -11,7 +11,6 @@ import FindExistingPixTransactionService from "../services/MercadoPagoService/Fi
 
 import Company from "../models/Company";
 import Invoices from "../models/Invoices";
-import { getIO } from "../libs/socket";
 
 // ==========================================
 // CONSULTA LEGADA - EFÍ
@@ -115,44 +114,102 @@ export const createSubscription = async (
     );
   }
 
-  // Gerar cobrança pelo Mercado Pago
+  // ========================================
+  // VERIFICAR COBRANÇA EXISTENTE
+  // ========================================
+
   try {
-    
-  const idempotencyKey =
-    `invoice_${invoice.id}_company_${companyId}`;
-  
-  const pix = await CreatePixOrderService({
-    invoiceId: invoice.id,
-    companyId,
-    amount: invoiceValue,
-    payerEmail: company.email,
-    idempotencyKey
-  });
-  
-  // Registrar a cobrança no PostgreSQL
-  await SavePixTransactionService({
-    invoiceId: invoice.id,
-    companyId,
-    amount: invoiceValue,
-    idempotencyKey,
-    orderId: String(pix.orderId),
-    paymentId: pix.paymentId
-      ? String(pix.paymentId)
-      : undefined,
-    qrCode: pix.qrcode.qrcode,
-    status: pix.status || "pending",
-    expiresAt: null
-  });
-  
-  return res.status(200).json(pix);
+    const existing =
+      await FindExistingPixTransactionService({
+        invoiceId: invoice.id,
+        companyId,
+        amount: invoiceValue
+      });
+
+    if (existing.found) {
+      const order = existing.order;
+
+      if (!order) {
+        throw new AppError(
+          "Não foi possível verificar a cobrança anterior",
+          409
+        );
+      }
+
+      // Cobrança já processada pelo Mercado Pago
+      if (order.orderStatus === "processed") {
+        throw new AppError(
+          "Pagamento já processado. Aguardando atualização da fatura.",
+          409
+        );
+      }
+
+      // Cobrança anterior aguardando pagamento
+      if (
+        order.orderStatus === "action_required" &&
+        order.paymentStatus === "action_required" &&
+        order.qrCode
+      ) {
+        // Ainda não temos a validade confirmada
+        // da cobrança. Não reutilizar QR Code
+        // sem verificar sua expiração.
+        throw new AppError(
+          "Existe uma cobrança Pix pendente. A validade precisa ser verificada.",
+          409
+        );
+      }
+
+      // Outros estados exigem reconciliação
+      throw new AppError(
+        "Cobrança anterior requer verificação antes de gerar outro Pix.",
+        409
+      );
+    }
+
+    // ========================================
+    // GERAR NOVA COBRANÇA MERCADO PAGO
+    // ========================================
+
+    const idempotencyKey =
+      `invoice_${invoice.id}_company_${companyId}`;
+
+    const pix = await CreatePixOrderService({
+      invoiceId: invoice.id,
+      companyId,
+      amount: invoiceValue,
+      payerEmail: company.email,
+      idempotencyKey
+    });
+
+    // Registrar a cobrança no PostgreSQL
+    await SavePixTransactionService({
+      invoiceId: invoice.id,
+      companyId,
+      amount: invoiceValue,
+      idempotencyKey,
+      orderId: String(pix.orderId),
+      paymentId: pix.paymentId
+        ? String(pix.paymentId)
+        : undefined,
+      qrCode: pix.qrcode.qrcode,
+      status: pix.status || "pending",
+      expiresAt: pix.expiresAt
+    });
+
+    return res.status(200).json(pix);
 
   } catch (error: any) {
+    // Preserva erros de validação e conflito
+    if (error instanceof AppError) {
+      throw error;
+    }
+
     console.error("ERRO MERCADO PAGO:", {
       message: error?.message
     });
 
     throw new AppError(
-      "Não foi possível gerar a cobrança Pix",
+      "Não foi possível processar a cobrança Pix",
       502
     );
   }
@@ -192,6 +249,7 @@ export const createWebhook = async (
       params,
       body
     );
+
     return res.json(create);
 
   } catch (error) {
@@ -205,17 +263,13 @@ export const createWebhook = async (
 };
 
 // ==========================================
-// RECEBIMENTO WEBHOOK LEGADO - EFÍ
-// SERÁ SUBSTITUÍDO PELO MERCADO PAGO
+// WEBHOOK LEGADO - DESATIVADO
 // ==========================================
 
 export const webhook = async (
   req: Request,
   res: Response
 ): Promise<Response> => {
-  // Desativado durante a migração.
-  // Não confiar em notificações recebidas sem
-  // autenticação e confirmação no provedor.
   return res.status(503).json({
     error: "Webhook de pagamentos em migração"
   });
