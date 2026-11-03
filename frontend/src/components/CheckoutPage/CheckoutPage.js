@@ -81,7 +81,7 @@ export default function CheckoutPage(props) {
         );
 
       case 2:
-        return <ReviewOrder />;
+        return <ReviewOrder invoiceId={invoiceId} />;
 
       default:
         return <div>Etapa não encontrada</div>;
