@@ -1,11 +1,9 @@
-# Saindo do Node 18 para Node 20
+
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Install system dependencies for Puppeteer and FFmpeg
-# Note: Puppeteer on Alpine needs specific flags or a custom executable path.
-# We install chromium and point Puppeteer to it if needed, or rely on the installed deps.
+# Dependencias do sistema
 RUN apk add --no-cache \
     chromium \
     nss \
@@ -19,21 +17,30 @@ RUN apk add --no-cache \
     make \
     g++
 
-# Tell Puppeteer to skip installing Chrome. We'll be using the installed package.
+# Configuracao do Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
+# Instalar dependencias do backend
 COPY backend/package*.json ./
 
 RUN npm install
 
+# Copiar codigo do backend
 COPY backend/ .
 
+# Compilar TypeScript
 RUN npm run build
 
-COPY docker/backend-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/backend-entrypoint.sh
+# Copiar script de inicializacao
+COPY docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint.sh
+
+# Normalizar quebras de linha Windows e permissões
+RUN sed -i '1s/^\xEF\xBB\xBF//' /usr/local/bin/backend-entrypoint.sh \
+    && sed -i 's/\r$//' /usr/local/bin/backend-entrypoint.sh \
+    && chmod +x /usr/local/bin/backend-entrypoint.sh
 
 EXPOSE 8080
 
-ENTRYPOINT ["backend-entrypoint.sh"]
+# Executar explicitamente com shell
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/backend-entrypoint.sh"]
