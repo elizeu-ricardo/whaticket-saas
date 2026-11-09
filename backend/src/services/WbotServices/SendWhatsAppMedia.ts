@@ -1,14 +1,17 @@
+
 import { WAMessage, AnyMessageContent } from "@whiskeysockets/baileys";
 import * as Sentry from "@sentry/node";
 import fs from "fs";
 import { exec } from "child_process";
 import path from "path";
 import ffmpeg from "fluent-ffmpeg";
+import { Op } from "sequelize";
+
 import AppError from "../../errors/AppError";
 import GetTicketWbot from "../../helpers/GetTicketWbot";
 import Ticket from "../../models/Ticket";
+import Message from "../../models/Message";
 import mime from "mime-types";
-
 import ffmpegPath from "ffmpeg-static";
 import formatBody from "../../helpers/Mustache";
 
@@ -17,20 +20,31 @@ interface Request {
   ticket: Ticket;
   companyId?: number;
   body?: string;
-  isForwarded?: boolean;  
+  isForwarded?: boolean;
 }
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
-const publicFolder = path.resolve(__dirname, "..", "..", "..", "public");
+const publicFolder = path.resolve(
+  __dirname, "..", "..", "..", "public"
+);
 
-const processAudio = async (audio: string, companyId: string): Promise<string> => {
-  const outputAudio = `${publicFolder}/company${companyId}/${new Date().getTime()}.ogg`;
+const processAudio = async (
+  audio: string,
+  companyId: string
+): Promise<string> => {
+  const outputAudio =
+    `${publicFolder}/company${companyId}/${new Date().getTime()}.ogg`;
+
   return new Promise((resolve, reject) => {
     exec(
       `${ffmpegPath} -i ${audio} -vn -c:a libopus -b:a 128k ${outputAudio} -y`,
       (error, _stdout, _stderr) => {
-        if (error) reject(error);
+        if (error) {
+          reject(error);
+          return;
+        }
+
         fs.unlinkSync(audio);
         resolve(outputAudio);
       }
@@ -38,18 +52,67 @@ const processAudio = async (audio: string, companyId: string): Promise<string> =
   });
 };
 
-const processAudioFile = async (audio: string, companyId: string): Promise<string> => {
-  const outputAudio = `${publicFolder}/company${companyId}/${new Date().getTime()}.mp3`;
+const processAudioFile = async (
+  audio: string,
+  companyId: string
+): Promise<string> => {
+  const outputAudio =
+    `${publicFolder}/company${companyId}/${new Date().getTime()}.mp3`;
+
   return new Promise((resolve, reject) => {
     exec(
       `${ffmpegPath} -i ${audio} -vn -ar 44100 -ac 2 -b:a 192k ${outputAudio}`,
       (error, _stdout, _stderr) => {
-        if (error) reject(error);
+        if (error) {
+          reject(error);
+          return;
+        }
+
         fs.unlinkSync(audio);
         resolve(outputAudio);
       }
     );
   });
+};
+
+// Preserva o JID original para contatos identificados por LID.
+const resolveMediaRecipientJid = async (
+  ticket: Ticket
+): Promise<string> => {
+  if (ticket.isGroup) {
+    return `${ticket.contact.number}@g.us`;
+  }
+
+  const incomingMessage = await Message.findOne({
+    attributes: ["remoteJid"],
+    where: {
+      ticketId: ticket.id,
+      companyId: ticket.companyId,
+      fromMe: false,
+      [Op.or]: [
+        { remoteJid: { [Op.like]: "%@lid" } },
+        { remoteJid: { [Op.like]: "%@s.whatsapp.net" } }
+      ]
+    },
+    order: [["createdAt", "DESC"]]
+  });
+
+  const originalJid = incomingMessage?.remoteJid;
+
+  if (
+    originalJid &&
+    /^\d+@(lid|s\.whatsapp\.net)$/.test(originalJid)
+  ) {
+    return originalJid;
+  }
+
+  const number = String(ticket.contact.number || "").trim();
+
+  if (!/^\d+$/.test(number)) {
+    throw new AppError("ERR_INVALID_WAPP_NUMBER");
+  }
+
+  return `${number}@s.whatsapp.net`;
 };
 
 export const getMessageOptions = async (
@@ -59,54 +122,50 @@ export const getMessageOptions = async (
   body: string = " "
 ): Promise<any> => {
   const mimeType = mime.lookup(pathMedia);
-  const typeMessage = mimeType.split("/")[0];
 
   try {
     if (!mimeType) {
       throw new Error("Invalid mimetype");
     }
+
+    const typeMessage = mimeType.split("/")[0];
     let options: AnyMessageContent;
 
     if (typeMessage === "video") {
       options = {
         video: fs.readFileSync(pathMedia),
         caption: body ? body : null,
-        fileName: fileName
+        fileName
       };
     } else if (typeMessage === "audio") {
-      const typeAudio = true;
       const convert = await processAudio(pathMedia, companyId);
-      if (typeAudio) {
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: "audio/ogg; codecs=opus",
-          ptt: true,
-        };
-      } else {
-        options = {
-          audio: fs.readFileSync(convert),
-          mimetype: typeAudio ? "audio/mp4" : mimeType,
-          ptt: true
-        };
-      }
-    } else if (typeMessage === "document" || fileName.endsWith('.psd')) {
+
+      options = {
+        audio: fs.readFileSync(convert),
+        mimetype: "audio/ogg; codecs=opus",
+        ptt: true
+      };
+    } else if (
+      typeMessage === "document" ||
+      fileName.endsWith(".psd")
+    ) {
       options = {
         document: fs.readFileSync(pathMedia),
         caption: body ? body : null,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
     } else if (typeMessage === "application") {
       options = {
         document: fs.readFileSync(pathMedia),
         caption: body ? body : null,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
     } else {
       options = {
         image: fs.readFileSync(pathMedia),
-        caption: body ? body : null,
+        caption: body ? body : null
       };
     }
 
@@ -127,50 +186,52 @@ const SendWhatsAppMedia = async ({
   try {
     const wbot = await GetTicketWbot(ticket);
     const companyId = ticket.companyId.toString();
-
     const pathMedia = media.path;
     const mimeType = media.mimetype;
     const typeMessage = mimeType.split("/")[0];
-    const fileName = media.originalname.replace('/', '-');
+    const fileName = media.originalname.replace("/", "-");
+
     let options: AnyMessageContent;
+
     const bodyMessage = formatBody(body, ticket.contact);
 
-    // Lista de tipos MIME de vídeo comuns
     const videoMimeTypes = [
-      'video/mp4',
-      'video/3gpp',
-      'video/quicktime',
-      'video/x-msvideo',
-      'video/x-ms-wmv',
-      'video/x-matroska',
-      'video/webm',
-      'video/ogg'
+      "video/mp4",
+      "video/3gpp",
+      "video/quicktime",
+      "video/x-msvideo",
+      "video/x-ms-wmv",
+      "video/x-matroska",
+      "video/webm",
+      "video/ogg"
     ];
 
-    // Lista de extensões que devem ser tratadas como documento
-    const documentExtensions = ['.psd', '.ai', '.eps', '.indd', '.xd', '.sketch'];
+    const documentExtensions = [
+      ".psd", ".ai", ".eps", ".indd", ".xd", ".sketch"
+    ];
 
-    // Verifica se é um arquivo PSD ou similar (deve ser tratado como documento)
-    const shouldBeDocument = documentExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+    const shouldBeDocument = documentExtensions.some(ext =>
+      fileName.toLowerCase().endsWith(ext)
+    );
 
     if (shouldBeDocument) {
       options = {
         document: fs.readFileSync(pathMedia),
         caption: bodyMessage,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
-    }
-    // Verifica se é um vídeo (incluindo vários formatos)
-    else if (typeMessage === "video" || videoMimeTypes.includes(mimeType)) {
+    } else if (
+      typeMessage === "video" ||
+      videoMimeTypes.includes(mimeType)
+    ) {
       options = {
         video: fs.readFileSync(pathMedia),
         caption: bodyMessage,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
     } else if (typeMessage === "audio") {
-      // Verifica se o arquivo já é OGG
       if (mimeType === "audio/ogg") {
         options = {
           audio: fs.readFileSync(pathMedia),
@@ -178,19 +239,22 @@ const SendWhatsAppMedia = async ({
           ptt: true
         };
       } else {
-        // Converte para OGG se não for
         const convert = await processAudio(pathMedia, companyId);
+
         options = {
           audio: fs.readFileSync(convert),
           mimetype: "audio/ogg; codecs=opus",
           ptt: true
         };
       }
-    } else if (typeMessage === "document" || mimeType === "application/pdf") {
+    } else if (
+      typeMessage === "document" ||
+      mimeType === "application/pdf"
+    ) {
       options = {
         document: fs.readFileSync(pathMedia),
         caption: bodyMessage,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
     } else if (typeMessage === "image") {
@@ -199,28 +263,33 @@ const SendWhatsAppMedia = async ({
         caption: bodyMessage
       };
     } else {
-      // Caso o tipo de mídia não seja reconhecido, trata como documento
       options = {
         document: fs.readFileSync(pathMedia),
         caption: bodyMessage,
-        fileName: fileName,
+        fileName,
         mimetype: mimeType
       };
     }
 
+    const recipientJid = await resolveMediaRecipientJid(ticket);
+
     const sentMessage = await wbot.sendMessage(
-      `${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
-      {
-        ...options
-      }
+      recipientJid,
+      { ...options }
     );
 
-    await ticket.update({ lastMessage: bodyMessage });
+    if (!sentMessage) {
+      throw new AppError("ERR_SENDING_WAPP_MSG");
+    }
+
+    await ticket.update({
+      lastMessage: bodyMessage
+    });
 
     return sentMessage;
   } catch (err) {
     Sentry.captureException(err);
-    console.log(err);
+    console.error("Erro ao enviar mídia:", err);
     throw new AppError("ERR_SENDING_WAPP_MSG");
   }
 };
