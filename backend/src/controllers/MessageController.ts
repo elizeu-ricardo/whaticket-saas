@@ -370,20 +370,33 @@ export const forwardMessage = async (
   return res.send();
 }
 
-export const edit = async (req: Request, res: Response): Promise<Response> => {
-  const { messageId } = req.params;
-  const { companyId } = req.user;
-  const { body }: MessageData = req.body;
-  console.log(body)
-  const { ticket , message } = await EditWhatsAppMessage({messageId, body});
 
-  const io = getIO();
- io.emit(`company-${companyId}-appMessage`, {
-    action:"update",
-    message,
-    ticket: ticket,
-    contact: ticket.contact,
+export const edit = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  const { messageId } = req.params;
+  const { companyId, id: userId } = req.user;
+  const { body }: MessageData = req.body;
+
+  const { ticket, message } = await EditWhatsAppMessage({
+    messageId,
+    body,
+    companyId,
+    userId
   });
 
+  const io = getIO();
+
+  io.to(ticket.id.toString()).emit(
+    `company-${companyId}-appMessage`,
+    {
+      action: "update",
+      message,
+      ticket,
+      contact: ticket.contact
+    }
+  );
+
   return res.send();
-}
+};
