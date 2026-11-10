@@ -1,6 +1,7 @@
-import { Op, fn, where, col, Filterable, Includeable } from "sequelize";
-import { startOfDay, endOfDay, parseISO } from "date-fns";
+import { Op, Includeable } from "sequelize";
+import { startOfDay, endOfDay, parseISO, isValid } from "date-fns";
 
+import AppError from "../../errors/AppError";
 import Ticket from "../../models/Ticket";
 import Contact from "../../models/Contact";
 import Message from "../../models/Message";
@@ -42,18 +43,42 @@ const ListTicketsService = async ({
   status,
   date,
   updatedAt,
-  showAll,
   userId,
   withUnreadMessages,
   companyId
 }: Request): Promise<Response> => {
-  let whereCondition: Filterable["where"] = {
-    [Op.or]: [{ userId }, { status: "pending" }],
-    queueId: { [Op.or]: [queueIds, null] }
-  };
-  let includeCondition: Includeable[];
+  // O perfil e as filas vêm do banco, nunca do parâmetro showAll do navegador.
+  const currentUser = await ShowUserService(userId);
 
-  includeCondition = [
+  if (Number(currentUser.companyId) !== Number(companyId)) {
+    throw new AppError("ERR_ACCESS_DENIED", 403);
+  }
+
+  // A empresa e o escopo de acesso sempre permanecem no AND da consulta.
+  const conditions: any[] = [{ companyId }];
+
+  if (currentUser.profile !== "admin") {
+    const allowedQueueIds = (currentUser.queues || []).map(queue => queue.id);
+
+    const availableQueueCondition = allowedQueueIds.length > 0
+      ? { [Op.or]: [{ [Op.in]: allowedQueueIds }, { [Op.is]: null }] }
+      : { [Op.is]: null };
+
+    conditions.push({
+      [Op.or]: [
+        // Atendimentos atribuídos ao próprio atendente.
+        { userId: currentUser.id },
+        // Apenas atendimentos pendentes, sem responsável e em filas permitidas.
+        {
+          userId: { [Op.is]: null },
+          status: "pending",
+          queueId: availableQueueCondition
+        }
+      ]
+    });
+  }
+
+  const includeCondition: Includeable[] = [
     {
       model: Contact,
       as: "contact",
@@ -78,145 +103,89 @@ const ListTicketsService = async ({
       model: Whatsapp,
       as: "whatsapp",
       attributes: ["name"]
-    },
+    }
   ];
 
-  if (showAll === "true") {
-    whereCondition = { queueId: { [Op.or]: [queueIds, null] } };
-  }
-
+  // showAll é propositalmente ignorado para atendentes comuns.
+  // O administrador já possui acesso aos tickets da própria empresa.
   if (status) {
-    whereCondition = {
-      ...whereCondition,
-      status
-    };
+    conditions.push({ status });
   }
 
-  if (searchParam) {
-    const sanitizedSearchParam = searchParam.toLocaleLowerCase().trim();
+  if (Array.isArray(queueIds) && queueIds.length > 0) {
+    conditions.push({ queueId: { [Op.in]: queueIds } });
+  }
 
-    includeCondition = [
-      ...includeCondition,
-      {
-        model: Message,
-        as: "messages",
-        attributes: ["id", "body"],
-        where: {
-          body: where(
-            fn("LOWER", col("body")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        },
-        required: false,
-        duplicating: false
-      }
-    ];
+  const term = searchParam.trim();
+  if (term) {
+    const pattern = `%${term}%`;
 
-    whereCondition = {
-      ...whereCondition,
+    includeCondition.push({
+      model: Message,
+      as: "messages",
+      attributes: ["id", "body"],
+      where: { body: { [Op.iLike]: pattern } },
+      required: false,
+      duplicating: false
+    });
+
+    conditions.push({
       [Op.or]: [
-        {
-          "$contact.name$": where(
-            fn("LOWER", col("contact.name")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        },
-        { "$contact.number$": { [Op.like]: `%${sanitizedSearchParam}%` } },
-        {
-          "$message.body$": where(
-            fn("LOWER", col("body")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        }
+        { "$contact.name$": { [Op.iLike]: pattern } },
+        { "$contact.number$": { [Op.iLike]: pattern } },
+        { "$messages.body$": { [Op.iLike]: pattern } }
       ]
-    };
+    });
   }
 
   if (date) {
-    whereCondition = {
-      createdAt: {
-        [Op.between]: [+startOfDay(parseISO(date)), +endOfDay(parseISO(date))]
-      }
-    };
+    const parsed = parseISO(date);
+    if (!isValid(parsed)) {
+      throw new AppError("ERR_INVALID_DATE", 400);
+    }
+    conditions.push({
+      createdAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
+    });
   }
 
   if (updatedAt) {
-    whereCondition = {
-      updatedAt: {
-        [Op.between]: [
-          +startOfDay(parseISO(updatedAt)),
-          +endOfDay(parseISO(updatedAt))
-        ]
-      }
-    };
+    const parsed = parseISO(updatedAt);
+    if (!isValid(parsed)) {
+      throw new AppError("ERR_INVALID_DATE", 400);
+    }
+    conditions.push({
+      updatedAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
+    });
   }
 
   if (withUnreadMessages === "true") {
-    const user = await ShowUserService(userId);
-    const userQueueIds = user.queues.map(queue => queue.id);
-
-    whereCondition = {
-      [Op.or]: [{ userId }, { status: "pending" }],
-      queueId: { [Op.or]: [userQueueIds, null] },
-      unreadMessages: { [Op.gt]: 0 }
-    };
+    conditions.push({ unreadMessages: { [Op.gt]: 0 } });
   }
 
   if (Array.isArray(tags) && tags.length > 0) {
-    const ticketsTagFilter: any[] | null = [];
-    for (let tag of tags) {
-      const ticketTags = await TicketTag.findAll({
-        where: { tagId: tag }
-      });
-      if (ticketTags) {
-        ticketsTagFilter.push(ticketTags.map(t => t.ticketId));
-      }
-    }
+    const ticketIdsByTag = await Promise.all(
+      tags.map(async tagId => {
+        const ticketTags = await TicketTag.findAll({ where: { tagId } });
+        return ticketTags.map(ticketTag => ticketTag.ticketId);
+      })
+    );
 
-    const ticketsIntersection: number[] = intersection(...ticketsTagFilter);
-
-    whereCondition = {
-      ...whereCondition,
-      id: {
-        [Op.in]: ticketsIntersection
-      }
-    };
+    conditions.push({
+      id: { [Op.in]: intersection(...ticketIdsByTag) }
+    });
   }
 
+  // A escolha de um filtro de usuário não pode ampliar o acesso já imposto.
   if (Array.isArray(users) && users.length > 0) {
-    const ticketsUserFilter: any[] | null = [];
-    for (let user of users) {
-      const ticketUsers = await Ticket.findAll({
-        where: { userId: user }
-      });
-      if (ticketUsers) {
-        ticketsUserFilter.push(ticketUsers.map(t => t.id));
-      }
-    }
-
-    const ticketsIntersection: number[] = intersection(...ticketsUserFilter);
-
-    whereCondition = {
-      ...whereCondition,
-      id: {
-        [Op.in]: ticketsIntersection
-      }
-    };
+    conditions.push({ userId: { [Op.in]: users } });
   }
 
+  const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
   const limit = 40;
-  const offset = limit * (+pageNumber - 1);
-
-  whereCondition = {
-    ...whereCondition,
-    companyId
-  };
+  const offset = limit * (page - 1);
 
   const { count, rows: tickets } = await Ticket.findAndCountAll({
-    where: whereCondition,
+    where: { [Op.and]: conditions },
     include: includeCondition,
     distinct: true,
     limit,
@@ -225,12 +194,10 @@ const ListTicketsService = async ({
     subQuery: false
   });
 
-  const hasMore = count > offset + tickets.length;
-
   return {
     tickets,
     count,
-    hasMore
+    hasMore: count > offset + tickets.length
   };
 };
 
