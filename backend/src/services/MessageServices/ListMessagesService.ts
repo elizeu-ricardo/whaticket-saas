@@ -1,15 +1,18 @@
 import { FindOptions } from "sequelize/types";
-import { Op } from "sequelize";
 import AppError from "../../errors/AppError";
 import Message from "../../models/Message";
 import Ticket from "../../models/Ticket";
-import ShowTicketService from "../TicketServices/ShowTicketService";
 import Queue from "../../models/Queue";
+import ShowTicketService from "../TicketServices/ShowTicketService";
+import ShowUserService from "../UserServices/ShowUserService";
 
 interface Request {
   ticketId: string;
   companyId: number;
+  userId: string;
   pageNumber?: string;
+  // Mantido por compatibilidade com chamadas existentes.
+  // As filas autorizadas sao consultadas diretamente no banco.
   queues?: number[];
 }
 
@@ -24,15 +27,33 @@ const ListMessagesService = async ({
   pageNumber = "1",
   ticketId,
   companyId,
-  queues = []
+  userId
 }: Request): Promise<Response> => {
+  // Confirma que o ticket pertence a empresa da sessao.
   const ticket = await ShowTicketService(ticketId, companyId);
+  const currentUser = await ShowUserService(userId);
 
-  if (!ticket) {
-    throw new AppError("ERR_NO_TICKET_FOUND", 404);
+  // Nunca confia em perfil, filas ou empresa enviados pelo navegador.
+  if (Number(currentUser.companyId) !== Number(companyId)) {
+    throw new AppError("ERR_ACCESS_DENIED", 403);
   }
 
-  // await setMessagesAsRead(ticket);
+  if (currentUser.profile !== "admin") {
+    const ownsTicket =
+      ticket.userId != null && Number(ticket.userId) === Number(currentUser.id);
+
+    const allowedQueueIds = (currentUser.queues || []).map(queue => Number(queue.id));
+    const availableForPickup =
+      ticket.status === "pending" &&
+      ticket.userId == null &&
+      (ticket.queueId == null || allowedQueueIds.includes(Number(ticket.queueId)));
+
+    if (!ownsTicket && !availableForPickup) {
+      throw new AppError("ERR_FORBIDDEN_TICKET_ACCESS", 403);
+    }
+  }
+
+  // Consultar mensagens apenas depois de validar a autorizacao.
   const limit = 20;
   const offset = limit * (+pageNumber - 1);
 
@@ -42,17 +63,6 @@ const ListMessagesService = async ({
       companyId
     }
   };
-
-  // Remove the queue filtering entirely since we want to show all messages
-  // regardless of which queue they were created under
-  // if (queues.length > 0) {
-  //   options.where["queueId"] = {
-  //     [Op.or]: {
-  //       [Op.in]: queues,
-  //       [Op.eq]: null
-  //     }
-  //   };
-  // }
 
   const { count, rows: messages } = await Message.findAndCountAll({
     ...options,
