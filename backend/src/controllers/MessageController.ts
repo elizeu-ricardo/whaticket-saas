@@ -109,19 +109,26 @@ export const remove = async (
   res: Response
 ): Promise<Response> => {
   const { messageId } = req.params;
-  const { companyId } = req.user;
+  const { companyId, id: userId } = req.user;
 
-  const message = await DeleteWhatsAppMessage(messageId);
+  const message = await DeleteWhatsAppMessage({
+    messageId,
+    companyId,
+    userId
+  });
 
   const io = getIO();
-  io.to(message.ticketId.toString()).emit(`company-${companyId}-appMessage`, {
-    action: "update",
-    message
-  });
+
+  io.to(message.ticketId.toString()).emit(
+    `company-${companyId}-appMessage`,
+    {
+      action: "update",
+      message
+    }
+  );
 
   return res.send();
 };
-
 export const send = async (req: Request, res: Response): Promise<Response> => {
   const { whatsappId } = req.params as unknown as { whatsappId: number };
   const messageData: MessageData = req.body;
