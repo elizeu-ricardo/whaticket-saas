@@ -60,6 +60,7 @@ export const index = async (req: Request, res: Response): Promise<Response> => {
     pageNumber,
     ticketId,
     companyId,
+    userId: req.user.id,
     queues
   });
 
