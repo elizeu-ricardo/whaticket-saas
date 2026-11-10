@@ -1,6 +1,7 @@
-import { Op, fn, where, col, Filterable, Includeable } from "sequelize";
-import { startOfDay, endOfDay, parseISO } from "date-fns";
+import { Op, Includeable } from "sequelize";
+import { startOfDay, endOfDay, parseISO, isValid } from "date-fns";
 
+import AppError from "../../errors/AppError";
 import Ticket from "../../models/Ticket";
 import Contact from "../../models/Contact";
 import Message from "../../models/Message";
@@ -42,18 +43,47 @@ const ListTicketsServiceKanban = async ({
   status,
   date,
   updatedAt,
-  showAll = "true",
   userId,
   withUnreadMessages,
   companyId
 }: Request): Promise<Response> => {
-  let whereCondition: Filterable["where"] = {
-    queueId: { [Op.or]: [queueIds, null] },
-    companyId,
-    status: { [Op.or]: ["pending", "open", "closed"] }
-  };
+  // Nunca confiar em showAll, users ou queueIds como autorizacao.
+  // O usuario e suas filas devem vir do banco de dados.
+  const currentUser = await ShowUserService(userId);
 
-  let includeCondition: Includeable[] = [
+  if (Number(currentUser.companyId) !== Number(companyId)) {
+    throw new AppError("ERR_ACCESS_DENIED", 403);
+  }
+
+  // Estes filtros sao sempre combinados com AND e nao podem ser substituidos
+  // por busca, data, filtros do Kanban ou parametros do navegador.
+  const conditions: any[] = [
+    { companyId },
+    { status: { [Op.in]: ["pending", "open", "closed"] } }
+  ];
+
+  if (currentUser.profile !== "admin") {
+    const allowedQueueIds = (currentUser.queues || []).map(queue => queue.id);
+
+    const availableQueueCondition = allowedQueueIds.length > 0
+      ? { [Op.or]: [{ [Op.in]: allowedQueueIds }, { [Op.is]: null }] }
+      : { [Op.is]: null };
+
+    conditions.push({
+      [Op.or]: [
+        // Tickets atribuidos ao proprio atendente.
+        { userId: currentUser.id },
+        // Tickets pendentes sem responsavel, em filas permitidas ou sem fila.
+        {
+          userId: { [Op.is]: null },
+          status: "pending",
+          queueId: availableQueueCondition
+        }
+      ]
+    });
+  }
+
+  const includeCondition: Includeable[] = [
     {
       model: Contact,
       as: "contact",
@@ -78,127 +108,89 @@ const ListTicketsServiceKanban = async ({
       model: Whatsapp,
       as: "whatsapp",
       attributes: ["name"]
-    },
+    }
   ];
 
-  if (searchParam) {
-    const sanitizedSearchParam = searchParam.toLocaleLowerCase().trim();
+  // showAll nao concede acesso extra a atendentes comuns.
+  // Administradores veem os tickets da propria empresa.
+  if (status && ["pending", "open", "closed"].includes(status)) {
+    conditions.push({ status });
+  }
 
-    includeCondition = [
-      ...includeCondition,
-      {
-        model: Message,
-        as: "messages",
-        attributes: ["id", "body"],
-        where: {
-          body: where(
-            fn("LOWER", col("body")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        },
-        required: false,
-        duplicating: false
-      }
-    ];
+  if (Array.isArray(queueIds) && queueIds.length > 0) {
+    conditions.push({ queueId: { [Op.in]: queueIds } });
+  }
 
-    whereCondition = {
-      ...whereCondition,
+  const term = searchParam.trim();
+  if (term) {
+    const pattern = `%${term}%`;
+
+    includeCondition.push({
+      model: Message,
+      as: "messages",
+      attributes: ["id", "body"],
+      where: { body: { [Op.iLike]: pattern } },
+      required: false,
+      duplicating: false
+    });
+
+    conditions.push({
       [Op.or]: [
-        {
-          "$contact.name$": where(
-            fn("LOWER", col("contact.name")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        },
-        { "$contact.number$": { [Op.like]: `%${sanitizedSearchParam}%` } },
-        {
-          "$message.body$": where(
-            fn("LOWER", col("body")),
-            "LIKE",
-            `%${sanitizedSearchParam}%`
-          )
-        }
+        { "$contact.name$": { [Op.iLike]: pattern } },
+        { "$contact.number$": { [Op.iLike]: pattern } },
+        { "$messages.body$": { [Op.iLike]: pattern } }
       ]
-    };
+    });
   }
 
   if (date) {
-    whereCondition = {
-      ...whereCondition,
-      createdAt: {
-        [Op.between]: [+startOfDay(parseISO(date)), +endOfDay(parseISO(date))]
-      }
-    };
+    const parsed = parseISO(date);
+    if (!isValid(parsed)) {
+      throw new AppError("ERR_INVALID_DATE", 400);
+    }
+    conditions.push({
+      createdAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
+    });
   }
 
   if (updatedAt) {
-    whereCondition = {
-      ...whereCondition,
-      updatedAt: {
-        [Op.between]: [
-          +startOfDay(parseISO(updatedAt)),
-          +endOfDay(parseISO(updatedAt))
-        ]
-      }
-    };
+    const parsed = parseISO(updatedAt);
+    if (!isValid(parsed)) {
+      throw new AppError("ERR_INVALID_DATE", 400);
+    }
+    conditions.push({
+      updatedAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
+    });
   }
 
   if (withUnreadMessages === "true") {
-    whereCondition = {
-      ...whereCondition,
-      unreadMessages: { [Op.gt]: 0 }
-    };
+    conditions.push({ unreadMessages: { [Op.gt]: 0 } });
   }
 
   if (Array.isArray(tags) && tags.length > 0) {
-    const ticketsTagFilter: any[] = [];
-    for (let tag of tags) {
-      const ticketTags = await TicketTag.findAll({
-        where: { tagId: tag }
-      });
-      if (ticketTags) {
-        ticketsTagFilter.push(ticketTags.map(t => t.ticketId));
-      }
-    }
+    const ticketIdsByTag = await Promise.all(
+      tags.map(async tagId => {
+        const ticketTags = await TicketTag.findAll({ where: { tagId } });
+        return ticketTags.map(ticketTag => ticketTag.ticketId);
+      })
+    );
 
-    const ticketsIntersection: number[] = intersection(...ticketsTagFilter);
-
-    whereCondition = {
-      ...whereCondition,
-      id: {
-        [Op.in]: ticketsIntersection
-      }
-    };
+    conditions.push({
+      id: { [Op.in]: intersection(...ticketIdsByTag) }
+    });
   }
 
+  // Filtro de usuario restringe o resultado, mas nunca amplia a permissao.
   if (Array.isArray(users) && users.length > 0) {
-    const ticketsUserFilter: any[] = [];
-    for (let user of users) {
-      const ticketUsers = await Ticket.findAll({
-        where: { userId: user }
-      });
-      if (ticketUsers) {
-        ticketsUserFilter.push(ticketUsers.map(t => t.id));
-      }
-    }
-
-    const ticketsIntersection: number[] = intersection(...ticketsUserFilter);
-
-    whereCondition = {
-      ...whereCondition,
-      id: {
-        [Op.in]: ticketsIntersection
-      }
-    };
+    conditions.push({ userId: { [Op.in]: users } });
   }
 
+  const page = Math.max(1, Math.floor(Number(pageNumber) || 1));
   const limit = 40;
-  const offset = limit * (+pageNumber - 1);
+  const offset = limit * (page - 1);
 
   const { count, rows: tickets } = await Ticket.findAndCountAll({
-    where: whereCondition,
+    where: { [Op.and]: conditions },
     include: includeCondition,
     distinct: true,
     limit,
@@ -207,12 +199,10 @@ const ListTicketsServiceKanban = async ({
     subQuery: false
   });
 
-  const hasMore = count > offset + tickets.length;
-
   return {
     tickets,
     count,
-    hasMore
+    hasMore: count > offset + tickets.length
   };
 };
 
