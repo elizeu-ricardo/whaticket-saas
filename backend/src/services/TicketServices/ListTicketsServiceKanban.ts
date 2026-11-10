@@ -199,6 +199,60 @@ const ListTicketsServiceKanban = async ({
     subQuery: false
   });
 
+
+  // Somente para exibicao no Kanban: o cadastro e o LID permanecem intactos.
+  // Usa o telefone informado pelo proprio WhatsApp nas mensagens recebidas.
+  const ticketsByLid = new Map<string, Ticket[]>();
+
+  for (const ticket of tickets) {
+    if (ticket.isGroup || !ticket.contact) continue;
+
+    const identifier = String(ticket.contact.number || "");
+    if (!/^\d+$/.test(identifier)) continue;
+
+    const group = ticketsByLid.get(identifier) || [];
+    group.push(ticket);
+    ticketsByLid.set(identifier, group);
+  }
+
+  await Promise.all(
+    Array.from(ticketsByLid.entries()).map(async ([identifier, groupedTickets]) => {
+      const incomingMessages = await Message.findAll({
+        attributes: ["dataJson"],
+        where: {
+          companyId,
+          fromMe: false,
+          remoteJid: `${identifier}@lid`
+        },
+        order: [["createdAt", "DESC"]],
+        limit: 10
+      });
+
+      const phones = new Set<string>();
+      for (const item of incomingMessages) {
+        try {
+          const raw = JSON.parse(item.dataJson || "{}");
+          const alternativeJid = raw?.key?.remoteJidAlt;
+          const match = typeof alternativeJid === "string"
+            ? alternativeJid.match(/^(\d{8,15})@s\.whatsapp\.net$/)
+            : null;
+          if (match) phones.add(match[1]);
+        } catch {
+          // Uma mensagem legada sem JSON valido nao deve quebrar o Kanban.
+        }
+      }
+
+      // Nao exibir telefone se o WhatsApp forneceu associacoes conflitantes.
+      if (phones.size !== 1) return;
+      const displayNumber = Array.from(phones)[0];
+
+      for (const ticket of groupedTickets) {
+        // Campo virtual apenas da resposta da API. Nao altera Contacts.number.
+        ticket.contact.setDataValue("displayNumber" as any, displayNumber);
+      }
+    })
+  );
+
   return {
     tickets,
     count,
