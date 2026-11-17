@@ -43,32 +43,40 @@ const ListTicketsService = async ({
   status,
   date,
   updatedAt,
+  showAll,
   userId,
   withUnreadMessages,
   companyId
 }: Request): Promise<Response> => {
-  // O perfil e as filas vêm do banco, nunca do parâmetro showAll do navegador.
   const currentUser = await ShowUserService(userId);
 
   if (Number(currentUser.companyId) !== Number(companyId)) {
     throw new AppError("ERR_ACCESS_DENIED", 403);
   }
 
-  // A empresa e o escopo de acesso sempre permanecem no AND da consulta.
+  const selectedQueueIds = Array.isArray(queueIds)
+    ? queueIds.map(Number).filter(id => Number.isInteger(id) && id > 0)
+    : [];
+
+  // Empresa e permissoes obrigatorias permanecem no AND.
   const conditions: any[] = [{ companyId }];
 
   if (currentUser.profile !== "admin") {
-    const allowedQueueIds = (currentUser.queues || []).map(queue => queue.id);
+    const allowedQueueIds = (currentUser.queues || []).map(queue => Number(queue.id));
+    const pendingQueueIds = selectedQueueIds.length > 0
+      ? allowedQueueIds.filter(id => selectedQueueIds.includes(id))
+      : allowedQueueIds;
 
-    const availableQueueCondition = allowedQueueIds.length > 0
-      ? { [Op.or]: [{ [Op.in]: allowedQueueIds }, { [Op.is]: null }] }
+    // Uma conversa sem fila continua disponivel, mesmo com filtro selecionado.
+    const availableQueueCondition = pendingQueueIds.length > 0
+      ? { [Op.or]: [{ [Op.in]: pendingQueueIds }, { [Op.is]: null }] }
       : { [Op.is]: null };
 
     conditions.push({
       [Op.or]: [
-        // Atendimentos atribuídos ao próprio atendente.
+        // Sempre mostrar os tickets do proprio atendente, mesmo fora da fila selecionada.
         { userId: currentUser.id },
-        // Apenas atendimentos pendentes, sem responsável e em filas permitidas.
+        // Tickets disponiveis: sem responsavel, pendentes e em fila autorizada.
         {
           userId: { [Op.is]: null },
           status: "pending",
@@ -106,17 +114,27 @@ const ListTicketsService = async ({
     }
   ];
 
-  // showAll é propositalmente ignorado para atendentes comuns.
-  // O administrador já possui acesso aos tickets da própria empresa.
   if (status) {
     conditions.push({ status });
   }
 
-  if (Array.isArray(queueIds) && queueIds.length > 0) {
-    conditions.push({ queueId: { [Op.in]: queueIds } });
+  // CRITICO: nao aplicar o filtro de fila globalmente a quem ja tem o ticket.
+  // Admin com showAll=true deve ver todos os tickets da propria empresa.
+  // Admin com showAll=false pode filtrar filas, mas nunca perde seus tickets.
+  if (
+    currentUser.profile === "admin" &&
+    showAll !== "true" &&
+    selectedQueueIds.length > 0
+  ) {
+    conditions.push({
+      [Op.or]: [
+        { queueId: { [Op.in]: selectedQueueIds } },
+        { userId: currentUser.id }
+      ]
+    });
   }
 
-  const term = searchParam.trim();
+  const term = (searchParam || "").trim();
   if (term) {
     const pattern = `%${term}%`;
 
@@ -140,9 +158,8 @@ const ListTicketsService = async ({
 
   if (date) {
     const parsed = parseISO(date);
-    if (!isValid(parsed)) {
-      throw new AppError("ERR_INVALID_DATE", 400);
-    }
+    if (!isValid(parsed)) throw new AppError("ERR_INVALID_DATE", 400);
+
     conditions.push({
       createdAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
     });
@@ -150,9 +167,8 @@ const ListTicketsService = async ({
 
   if (updatedAt) {
     const parsed = parseISO(updatedAt);
-    if (!isValid(parsed)) {
-      throw new AppError("ERR_INVALID_DATE", 400);
-    }
+    if (!isValid(parsed)) throw new AppError("ERR_INVALID_DATE", 400);
+
     conditions.push({
       updatedAt: { [Op.between]: [startOfDay(parsed), endOfDay(parsed)] }
     });
@@ -175,7 +191,7 @@ const ListTicketsService = async ({
     });
   }
 
-  // A escolha de um filtro de usuário não pode ampliar o acesso já imposto.
+  // Filtro de usuario nunca pode aumentar os direitos do usuario logado.
   if (Array.isArray(users) && users.length > 0) {
     conditions.push({ userId: { [Op.in]: users } });
   }
