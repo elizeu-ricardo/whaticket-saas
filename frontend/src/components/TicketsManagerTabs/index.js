@@ -235,14 +235,6 @@ const TicketsManagerTabs = () => {
   }, []);
 
   useEffect(() => {
-    if (
-      user.profile.toUpperCase() === 'ADMIN'
-    ) {
-      setShowAllTickets(true);
-    }
-  }, []);
-
-  useEffect(() => {
     if (tab === 'search') {
       searchInputRef.current.focus();
     }
