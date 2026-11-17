@@ -435,7 +435,11 @@ function getDateLastMessage(contact) {
                                     <MenuItem>
                         
 									<CSVLink style={{ textDecoration:'none' }} separator=";" filename={'whaticket.csv'} 
-									data={contacts.map((contact) => ({ name: contact.name, number: contact.number, email: contact.email }))}>
+									data={contacts.map((contact) => ({
+										  name: contact.name,
+										  number: contact.displayNumber || contact.number,
+										  email: contact.email
+										}))}>
                                         
                                         <CloudDownload fontSize="small"
                                             color="primary"
@@ -518,7 +522,9 @@ function getDateLastMessage(contact) {
                                         {<Avatar src={contact.profilePicUrl} />}
                                     </TableCell>
                   <TableCell>{contact.name}</TableCell>
-                  <TableCell align="center">{contact.number}</TableCell>
+                  <TableCell align="center">
+					{contact.displayNumber || contact.number}
+				  </TableCell>
                   <TableCell align="center">{contact.email}</TableCell>
                                     <TableCell align="center">
                                         {getDateLastMessage(contact)}
